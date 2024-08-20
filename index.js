@@ -1,25 +1,33 @@
 import { test, expect, chromium } from "@playwright/test"
 import dayjs from "dayjs"
 import { link } from "fs"
+import l from "lodash"
 
-async function sortHackerNewsArticles() {
-  // launch browser
-  const browser = await chromium.launch({ headless: false })
-  const context = await browser.newContext()
-  const page = await context.newPage()
+const browser = await chromium.launch({ headless: false })
+const context = await browser.newContext()
+const page = await context.newPage()
+page.on("requestfailed", (request) => {
+  console.error(
+    `REQUEST FAILED: ${request.url()} - ${request.failure().errorText}`
+  )
+})
 
-  console.log("Navigating to Hacker News newest page...")
-  await page.goto("https://news.ycombinator.com/newest")
-  console.log("Page loaded.")
+console.log("Navigating to Hacker News newest page...")
+const testPage = "https://news.ycombinator.com/newest"
+await page.goto(testPage)
 
+const rowsWithId = await page.$$eval("tr[id]", (rows) => {
+  return rows.map((row) => row.outerHTML)
+})
+
+console.log(rowsWithId[4])
+
+const getNews = async (page) => {
   console.log("Extracting article data...")
-  // Locate all rows
   const rows = await page.getByRole("row")
 
-  // Use evaluateAll to get the IDs and ranks
-  const news = await rows.evaluateAll((rows) => {
-    // Step 1: Extract id and rank
-    const newsComputed = rows
+  const newsData = await rows.evaluateAll((rows) => {
+    const createdArrayForNewsData = rows
       .map((row) => {
         const id = row.getAttribute("id")
 
@@ -57,7 +65,6 @@ async function sortHackerNewsArticles() {
       })
       .filter((item) => item.id !== null && item.rank !== null)
 
-    // Step 2: Check for timestamps in subsequent rows
     rows.forEach((row) => {
       const hrefsInRowForCheck = Array.from(
         row.querySelectorAll("a[href]")
@@ -66,20 +73,18 @@ async function sortHackerNewsArticles() {
         (el) => el.getAttribute("id")
       )
 
-      newsComputed.forEach((newsItem) => {
+      createdArrayForNewsData.forEach((newsItem) => {
         if (
           hrefsInRowForCheck.some((href) => href.includes(newsItem.id)) ||
           idsInRowForCheck.some((id) => id.includes(newsItem.id))
         ) {
-          const isTime = (value) => {
-            return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(value)
-          }
+          const isTime = (value) =>
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(value)
 
           const findedTime = () => {
             const findedTimeInTitle = Array.from(
               row.querySelectorAll("*")
-            ).find((el) => isTime(el.getAttribute("tit2le")))
-
+            ).find((el) => isTime(el.getAttribute("title")))
             const findedTimeInAttributes = Array.from(
               row.querySelectorAll("*")
             ).find((el) => {
@@ -98,17 +103,148 @@ async function sortHackerNewsArticles() {
             return null
           }
 
-          if (!!findedTime()) newsItem.time = findedTime()
+          if (findedTime()) newsItem.time = findedTime()
         }
       })
     })
 
-    return newsComputed
+    return createdArrayForNewsData
   })
 
-  console.log(news)
+  return newsData
 }
 
-;(async () => {
-  await sortHackerNewsArticles()
-})()
+// export const sortHackerNewsArticles = async () => {
+//   const browser = await chromium.launch({ headless: false })
+//   const context = await browser.newContext()
+//   const page = await context.newPage()
+//   page.on("requestfailed", (request) => {
+//     console.error(
+//       `REQUEST FAILED: ${request.url()} - ${request.failure().errorText}`
+//     )
+//   })
+
+//   try {
+//     console.log("Navigating to Hacker News newest page...")
+//     const testPage = "https://news.ycombinator.com/newest"
+//     await page.goto(testPage)
+
+//     console.log("Page loaded.")
+
+//     let combinedNewsData = []
+//     let highestRank = 0
+
+//     let initialNumber = 1
+
+//     const executeUntilTrue = async () => {
+//       const newNews = await getNews(page)
+//       if (l.isEmpty(newNews)) {
+//         console.log("ERROR IN FETCHING DATA")
+//         return
+//       }
+//       if (
+//         !l.isEmpty(combinedNewsData) &&
+//         combinedNewsData[0].rank === newNews[0].rank
+//       ) {
+//         console.log("ERROR IN PAGE ITERATION")
+//         return
+//       }
+//       console.log("combinedNewsData 0 ", combinedNewsData[0])
+//       console.log("combinedNewsData 29", combinedNewsData[29])
+//       console.log("newNews 0", newNews[0])
+//       console.log("newNews 29", newNews[29])
+//       console.log("combinedNewsData 30 ", combinedNewsData[30])
+//       console.log("combinedNewsData 59", combinedNewsData[59])
+//       console.log("combinedNewsData 60 ", combinedNewsData[60])
+//       console.log("combinedNewsData 89", combinedNewsData[89])
+//       combinedNewsData = l.concat(combinedNewsData, newNews)
+//       highestRank = l.maxBy(combinedNewsData, "rank").rank
+
+//       if (highestRank < 100) {
+//         initialNumber = initialNumber + newNews.length
+//         console.log("Looking for news on the next page")
+//         const countMoreButtons = await page
+//           .getByRole("link", { name: "More", exact: true })
+//           .count()
+//         if (countMoreButtons === 1)
+//           await page.getByRole("link", { name: "More", exact: true }).click()
+//         if (countMoreButtons != 1)
+//           await page.goto(`${testPage}?n=${initialNumber}`)
+
+//         await page.waitForTimeout(2000) // Wait for new content to load
+//         await executeUntilTrue()
+//       } else {
+//         console.log("Condition met!")
+//       }
+//     }
+
+//     await executeUntilTrue()
+
+//     const newsWithRankLessThan101 = l.filter(
+//       combinedNewsData,
+//       (item) => item.rank <= 100
+//     )
+//     console.log(newsWithRankLessThan101)
+
+//     return newsWithRankLessThan101
+//   } catch (error) {
+//     console.error("AN ERROR OCCURRED:", error)
+//   } finally {
+//     // await browser.close()
+//   }
+// }
+// ;(async () => {
+//   await sortHackerNewsArticles()
+// })()
+
+// // Test functions
+// const runTests = async () => {
+//   const newsWithRankLessThan100 = await sortHackerNewsArticles()
+
+//   console.log("Running tests...")
+
+//   // Test 1: Check if news array exists
+//   if (!l.isEmpty(newsWithRankLessThan100)) {
+//     console.log("Test 1 passed: News array exists.")
+//   } else {
+//     console.error("Test 1 failed: News array does not exist.")
+//   }
+
+//   // Test 2: Check if length of newsWithRankLessThan100 is 100
+//   if (newsWithRankLessThan100.length === 100) {
+//     console.log("Test 2 passed: Length of news array is 100.")
+//   } else {
+//     console.error(
+//       `Test 2 failed: Length of news array is ${newsWithRankLessThan100.length}.`
+//     )
+//   }
+
+//   // Test 3: Check if there are news with ranks from 1 to 100
+//   const ranks = l.map(newsWithRankLessThan100, "rank")
+//   const allRanksPresent = l.every(l.range(1, 101), (rank) =>
+//     l.includes(ranks, rank)
+//   )
+//   if (allRanksPresent) {
+//     console.log("Test 3 passed: All ranks from 1 to 100 are present.")
+//   } else {
+//     console.error("Test 3 failed: Not all ranks from 1 to 100 are present.")
+//   }
+
+//   // Test 4: Check if articles are sorted from newest to oldest
+//   const sorted = l.every(newsWithRankLessThan100, (item, index, array) => {
+//     if (index === 0) return true
+//     const currentItemDate = dayjs(item.time)
+//     const previousItemDate = dayjs(array[index - 1].time)
+//     return (
+//       currentItemDate.isBefore(previousItemDate) ||
+//       currentItemDate.isSame(previousItemDate)
+//     )
+//   })
+//   if (sorted) {
+//     console.log("Test 4 passed: Articles are sorted from newest to oldest.")
+//   } else {
+//     console.error("Test 4 failed: Articles are not sorted correctly.")
+//   }
+// }
+
+// runTests()
