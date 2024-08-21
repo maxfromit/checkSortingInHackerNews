@@ -1,81 +1,78 @@
-import { test, expect, chromium } from "@playwright/test"
+import { chromium } from "@playwright/test"
 import dayjs from "dayjs"
-import { link } from "fs"
 import l from "lodash"
 
-const getNews = async (page) => {
+const extractNewsData = async (page) => {
   console.log("Extracting article data...")
 
   const newsData = await page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll("tr[id]"))
     return rows
       .map((row) => {
-        let time = null
         const id = row.getAttribute("id")
         // Find the element with text matching the rank pattern
-        const isMaxThreeDigitsAndDot = (value) => {
-          return /^\d{1,3}\.$/.test(value)
-        }
-        const findedRank = () => {
-          const findedRankByClassRank = Array.from(
-            row.querySelectorAll(".rank")
-          ).find((el) => {
-            const text = el.textContent.trim()
-            return isMaxThreeDigitsAndDot(text)
-          })
-          const findedRankByAllRow = Array.from(row.querySelectorAll("*")).find(
+        const isMaxThreeDigitsAndDot = (value) => /^\d{1,3}\.$/.test(value)
+        const findRank = () => {
+          const rankByClass = Array.from(row.querySelectorAll(".rank")).find(
             (el) => {
               const text = el.textContent.trim()
               return isMaxThreeDigitsAndDot(text)
             }
           )
-          if (!!findedRankByClassRank)
+          const rankByAllElements = Array.from(row.querySelectorAll("*")).find(
+            (el) => {
+              const text = el.textContent.trim()
+              return isMaxThreeDigitsAndDot(text)
+            }
+          )
+          if (!!rankByClass)
+            return parseInt(rankByClass.textContent.trim().replace(".", ""), 10)
+          if (!!rankByAllElements)
             return parseInt(
-              findedRankByClassRank.textContent.trim().replace(".", ""),
-              10
-            )
-          if (!!findedRankByAllRow)
-            return parseInt(
-              findedRankByAllRow.textContent.trim().replace(".", ""),
+              rankByAllElements.textContent.trim().replace(".", ""),
               10
             )
           return null
         }
-        let sibling = row.nextElementSibling
 
-        while (sibling && !sibling.getAttribute("id")) {
-          const isTime = (value) =>
-            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(value)
+        const findTimeInsideSibling = (sibling) => {
+          if (!!sibling && !sibling.getAttribute("id")) {
+            const isTime = (value) =>
+              /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(value)
 
-          const findedTime = () => {
-            const findedTimeInTitle = Array.from(
-              sibling.querySelectorAll("*")
-            ).find((el) => isTime(el.getAttribute("title")))
-            const findedTimeInAttributes = Array.from(
-              sibling.querySelectorAll("*")
-            ).find((el) => {
-              return Array.from(el.attributes).some((attr) =>
-                isTime(attr.value)
-              )
-            })
+            const findedTime = () => {
+              const findedTimeInTitle = Array.from(
+                sibling.querySelectorAll("*")
+              ).find((el) => isTime(el.getAttribute("title")))
+              const findedTimeInAttributes = Array.from(
+                sibling.querySelectorAll("*")
+              ).find((el) => {
+                return Array.from(el.attributes).some((attr) =>
+                  isTime(attr.value)
+                )
+              })
 
-            if (findedTimeInTitle)
-              return findedTimeInTitle.getAttribute("title")
-            if (findedTimeInAttributes) {
-              return Array.from(findedTimeInAttributes.attributes).find(
-                (attr) => isTime(attr.value)
-              ).value
+              if (findedTimeInTitle)
+                return findedTimeInTitle.getAttribute("title")
+              if (findedTimeInAttributes) {
+                return Array.from(findedTimeInAttributes.attributes).find(
+                  (attr) => isTime(attr.value)
+                ).value
+              }
+              return null
             }
-            return null
-          }
 
-          if (findedTime()) {
-            time = findedTime()
-            break
+            if (!!findedTime()) return findedTime()
+            return findTimeInsideSibling(row.nextElementSibling)
           }
-          sibling = sibling.nextElementSibling
+          return null
         }
-        return { id: id ?? null, rank: findedRank(), time }
+
+        return {
+          id: id ?? null,
+          rank: findRank(),
+          time: findTimeInsideSibling(row.nextElementSibling),
+        }
       })
       .filter((item) => item.id !== null && item.rank !== null)
   })
@@ -83,7 +80,7 @@ const getNews = async (page) => {
   return newsData
 }
 
-export const sortHackerNewsArticles = async () => {
+export const fetchAndSortHackerNewsArticles = async () => {
   const browser = await chromium.launch({ headless: false })
   const context = await browser.newContext()
   const page = await context.newPage()
@@ -100,27 +97,23 @@ export const sortHackerNewsArticles = async () => {
 
     console.log("Page loaded.")
 
-    let combinedNewsData = []
+    let allNewsData = []
     let highestRank = 0
-
     let initialNumber = 1
 
-    const executeUntilTrue = async () => {
-      const newNews = await getNews(page)
+    const fetchNewsUntilConditionMet = async () => {
+      const newNews = await extractNewsData(page)
       if (l.isEmpty(newNews)) {
         console.log("ERROR IN FETCHING DATA")
         return
       }
-      if (
-        !l.isEmpty(combinedNewsData) &&
-        combinedNewsData[0].rank === newNews[0].rank
-      ) {
+      if (!l.isEmpty(allNewsData) && allNewsData[0].rank === newNews[0].rank) {
         console.log("ERROR IN PAGE ITERATION")
         return
       }
 
-      combinedNewsData = l.concat(combinedNewsData, newNews)
-      highestRank = l.maxBy(combinedNewsData, "rank").rank
+      allNewsData = l.concat(allNewsData, newNews)
+      highestRank = l.maxBy(allNewsData, "rank").rank
 
       if (highestRank < 100) {
         initialNumber = initialNumber + newNews.length
@@ -134,16 +127,16 @@ export const sortHackerNewsArticles = async () => {
           await page.goto(`${testPage}?n=${initialNumber}`)
 
         await page.waitForTimeout(2000) // Wait for new content to load
-        await executeUntilTrue()
+        await fetchNewsUntilConditionMet()
       } else {
         console.log("Condition met!")
       }
     }
 
-    await executeUntilTrue()
+    await fetchNewsUntilConditionMet()
 
     const newsWithRankLessThan101 = l.filter(
-      combinedNewsData,
+      allNewsData,
       (item) => item.rank <= 100
     )
     console.log(newsWithRankLessThan101)
@@ -152,37 +145,33 @@ export const sortHackerNewsArticles = async () => {
   } catch (error) {
     console.error("AN ERROR OCCURRED:", error)
   } finally {
-    // await browser.close()
+    await browser.close()
   }
 }
-;(async () => {
-  await sortHackerNewsArticles()
-})()
 
-// Test functions
 const runTests = async () => {
-  const newsWithRankLessThan101 = await sortHackerNewsArticles()
+  const latest100News = await fetchAndSortHackerNewsArticles()
 
   console.log("Running tests...")
 
-  // Test 1: Check if news array exists
-  if (!l.isEmpty(newsWithRankLessThan101)) {
+  // Test 1: Verify news array existence
+  if (!l.isEmpty(latest100News)) {
     console.log("Test 1 passed: News array exists.")
   } else {
     console.error("Test 1 failed: News array does not exist.")
   }
 
-  // Test 2: Check if length of newsWithRankLessThan100 is 100
-  if (newsWithRankLessThan101.length === 100) {
+  // Test 2: Verify length of latest100News is 100
+  if (latest100News.length === 100) {
     console.log("Test 2 passed: Length of news array is 100.")
   } else {
     console.error(
-      `Test 2 failed: Length of news array is ${newsWithRankLessThan101.length}.`
+      `Test 2 failed: Length of news array is ${latest100News.length}.`
     )
   }
 
-  // Test 3: Check if there are news with ranks from 1 to 100
-  const ranks = l.map(newsWithRankLessThan101, "rank")
+  // Test 3: Verify ranks from 1 to 100 are present
+  const ranks = l.map(latest100News, "rank")
   const allRanksPresent = l.every(l.range(1, 101), (rank) =>
     l.includes(ranks, rank)
   )
@@ -192,8 +181,19 @@ const runTests = async () => {
     console.error("Test 3 failed: Not all ranks from 1 to 100 are present.")
   }
 
-  // Test 4: Check if articles are sorted from newest to oldest
-  const sorted = l.every(newsWithRankLessThan101, (item, index, array) => {
+  // Test 4: Verify ranks are sequential from 1 to 100
+  const ranksInCorrectOrder = l.every(
+    latest100News,
+    (item, index) => item.rank === index + 1
+  )
+  if (ranksInCorrectOrder) {
+    console.log("Test 4 passed: Ranks are sequential from 1 to 100.")
+  } else {
+    console.error("Test 4 failed: Ranks are not sequential from 1 to 100.")
+  }
+
+  // Test 5: Verify articles are sorted from newest to oldest
+  const sorted = l.every(latest100News, (item, index, array) => {
     if (index === 0) return true
     const currentItemDate = dayjs(item.time)
     const previousItemDate = dayjs(array[index - 1].time)
@@ -203,10 +203,14 @@ const runTests = async () => {
     )
   })
   if (sorted) {
-    console.log("Test 4 passed: Articles are sorted from newest to oldest.")
+    console.log("Test 5 passed: Articles are sorted from newest to oldest.")
   } else {
-    console.error("Test 4 failed: Articles are not sorted correctly.")
+    console.error("Test 5 failed: Articles are not sorted correctly.")
   }
 }
 
 runTests()
+
+// ;(async () => {
+//   await fetchAndSortHackerNewsArticles()
+// })()
